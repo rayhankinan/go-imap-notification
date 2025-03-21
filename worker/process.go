@@ -31,6 +31,7 @@ func NewWorker(ctx context.Context, wg *sync.WaitGroup, id string) *Worker {
 	}
 }
 
+// NOTE: Although the chance is low, it is still possible to fetch the same email multiple times (depending on the server's behavior)
 func (w *Worker) Fetch(username, password string) ([]string, error) {
 	// Create a new connection for each worker
 	options := &imapclient.Options{
@@ -67,15 +68,6 @@ func (w *Worker) Fetch(username, password string) ([]string, error) {
 		return nil, err
 	}
 
-	// Fetch the email messages
-	fetchOptions := &imap.FetchOptions{
-		Envelope: true,
-	}
-	messages, err := client.Fetch(searchData.All, fetchOptions).Collect()
-	if err != nil {
-		return nil, err
-	}
-
 	// Mark the messages as seen
 	store := &imap.StoreFlags{
 		Op:     imap.StoreFlagsAdd,
@@ -83,6 +75,15 @@ func (w *Worker) Fetch(username, password string) ([]string, error) {
 		Flags:  []imap.Flag{imap.FlagSeen},
 	}
 	if _, err := client.Store(searchData.All, store, nil).Collect(); err != nil {
+		return nil, err
+	}
+
+	// Fetch the email messages
+	fetchOptions := &imap.FetchOptions{
+		Envelope: true,
+	}
+	messages, err := client.Fetch(searchData.All, fetchOptions).Collect()
+	if err != nil {
 		return nil, err
 	}
 
