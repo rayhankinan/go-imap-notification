@@ -37,8 +37,7 @@ func main() {
 				password := args[1]
 
 				// Create a channel to receive notifications
-				bufferSize := 1
-				dataChan := make(chan *imapclient.UnilateralDataMailbox, bufferSize)
+				dataChan := make(chan *imapclient.UnilateralDataMailbox, 1)
 
 				// Listen for notifications of mailbox changes
 				options := &imapclient.Options{
