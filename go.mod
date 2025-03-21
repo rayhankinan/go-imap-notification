@@ -1,4 +1,4 @@
-module go-imap-notification
+module github.com/rayhankinan/go-imap-notification
 
 go 1.23.0
 

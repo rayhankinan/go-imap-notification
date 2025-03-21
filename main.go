@@ -1,81 +1,20 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"mime"
 	"os"
 	"os/signal"
-	"strings"
+	"sync"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-message/charset"
+	"github.com/rayhankinan/go-imap-notification/worker"
 	"github.com/spf13/cobra"
 )
-
-func PrettifyEnvelope(envelope *imap.Envelope) string {
-	var sb strings.Builder
-
-	sb.WriteString(fmt.Sprintf("Message-ID: %s\n", envelope.MessageID))
-	sb.WriteString(fmt.Sprintf("Date: %s\n", envelope.Date))
-	sb.WriteString(fmt.Sprintf("Subject: %s\n", envelope.Subject))
-
-	fromAddresses := []string{}
-	for _, from := range envelope.From {
-		fromAddresses = append(fromAddresses, from.Addr())
-	}
-	if len(fromAddresses) > 0 {
-		sb.WriteString(fmt.Sprintf("From: %s\n", strings.Join(fromAddresses, ", ")))
-	}
-
-	senderAddresses := []string{}
-	for _, sender := range envelope.Sender {
-		senderAddresses = append(senderAddresses, sender.Addr())
-	}
-	if len(senderAddresses) > 0 {
-		sb.WriteString(fmt.Sprintf("Sender: %s\n", strings.Join(senderAddresses, ", ")))
-	}
-
-	replyToAddresses := []string{}
-	for _, replyTo := range envelope.ReplyTo {
-		replyToAddresses = append(replyToAddresses, replyTo.Addr())
-	}
-	if len(replyToAddresses) > 0 {
-		sb.WriteString(fmt.Sprintf("Reply-To: %s\n", strings.Join(replyToAddresses, ", ")))
-	}
-
-	toAddresses := []string{}
-	for _, to := range envelope.To {
-		toAddresses = append(toAddresses, to.Addr())
-	}
-	if len(toAddresses) > 0 {
-		sb.WriteString(fmt.Sprintf("To: %s\n", strings.Join(toAddresses, ", ")))
-	}
-
-	ccAddresses := []string{}
-	for _, cc := range envelope.Cc {
-		ccAddresses = append(ccAddresses, cc.Addr())
-	}
-	if len(ccAddresses) > 0 {
-		sb.WriteString(fmt.Sprintf("Cc: %s\n", strings.Join(ccAddresses, ", ")))
-	}
-
-	bccAddresses := []string{}
-	for _, bcc := range envelope.Bcc {
-		bccAddresses = append(bccAddresses, bcc.Addr())
-	}
-	if len(bccAddresses) > 0 {
-		sb.WriteString(fmt.Sprintf("Bcc: %s\n", strings.Join(bccAddresses, ", ")))
-	}
-
-	inReplyTo := envelope.InReplyTo
-	if len(inReplyTo) > 0 {
-		sb.WriteString(fmt.Sprintf("In-Reply-To: %s\n", strings.Join(inReplyTo, ", ")))
-	}
-
-	return sb.String()
-}
 
 func init() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
@@ -94,11 +33,22 @@ func main() {
 					log.Fatal("Usage: notify-email <username> <password>")
 				}
 
+				username := args[0]
+				password := args[1]
+
+				// Create a channel to receive notifications
 				dataChan := make(chan *imapclient.UnilateralDataMailbox, 1)
+
+				// Listen for notifications of mailbox changes
 				options := &imapclient.Options{
 					UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 						Mailbox: func(data *imapclient.UnilateralDataMailbox) {
-							dataChan <- data
+							select {
+							case dataChan <- data:
+								log.Println("A new notification has been received")
+							default:
+								log.Println("Current notification has not been processed yet")
+							}
 						},
 					},
 					WordDecoder: &mime.WordDecoder{CharsetReader: charset.Reader},
@@ -107,78 +57,69 @@ func main() {
 				if err != nil {
 					log.Fatalf("DialTLS failed: %v", err)
 				}
+				defer client.Close()
 
-				if err := client.Login(args[0], args[1]).Wait(); err != nil {
+				// Login to the server
+				if err := client.Login(username, password).Wait(); err != nil {
 					log.Fatalf("Login failed: %v", err)
 				}
 				defer client.Logout()
 
-				if _, err := client.Select("INBOX", &imap.SelectOptions{
+				// Select the INBOX mailbox
+				// We use READ-ONLY mode to avoid accidentally marking emails as read
+				selectOptions := &imap.SelectOptions{
 					ReadOnly: true,
-				}).Wait(); err != nil {
+				}
+				if _, err := client.Select("INBOX", selectOptions).Wait(); err != nil {
 					log.Fatal(err)
 				}
 
 				log.Println("Waiting for new emails...")
 
-				quitChan := make(chan os.Signal, 1)
-				signal.Notify(quitChan, os.Interrupt)
-
-				var idleCmd *imapclient.IdleCommand
-				if idleCmd, err = client.Idle(); err != nil {
+				// IDLE command will block until a new email arrives
+				idleCmd, err := client.Idle()
+				if err != nil {
 					log.Fatalf("IDLE command failed: %v", err)
 				}
 
-				for {
-					select {
-					case data := <-dataChan:
-						if data.NumMessages == nil {
-							log.Println("Mailbox data does not provide number of messages")
-							continue
-						}
+				// Create a context to handle signals
+				ctx := cmd.Context()
+				waitGroup := &sync.WaitGroup{}
 
-						seqNum := *data.NumMessages
+				// Spawn workers to process the notification
+				numWorker := 5
+				workers := []*worker.Worker{}
+				for i := range numWorker {
+					w := worker.NewWorker(ctx, waitGroup, fmt.Sprintf("worker-%d", i+1))
+					workers = append(workers, w)
 
-						log.Printf("New email arrived: %d\n", seqNum)
-
-						if err := idleCmd.Close(); err != nil {
-							log.Fatalf("IDLE command close failed: %v", err)
-						}
-
-						numSet := imap.SeqSetNum(seqNum)
-						fetchOptions := &imap.FetchOptions{
-							Envelope: true,
-						}
-						fetchCmd := client.Fetch(numSet, fetchOptions)
-
-						messages, err := fetchCmd.Collect()
-						if err != nil {
-							log.Fatalf("Fetch failed: %v", err)
-						}
-
-						for _, msg := range messages {
-							log.Printf("Email details:\n%s", PrettifyEnvelope(msg.Envelope))
-						}
-
-						if idleCmd, err = client.Idle(); err != nil {
-							log.Fatalf("IDLE command failed: %v", err)
-						}
-
-					case <-quitChan:
-						log.Println("Exiting...")
-
-						if err := idleCmd.Close(); err != nil {
-							log.Fatalf("IDLE command close failed: %v", err)
-						}
-
-						return
-					}
+					go w.Start(username, password, dataChan)
 				}
+
+				// Wait for a signal to exit
+				quitChan := make(chan os.Signal, 1)
+				signal.Notify(quitChan, os.Interrupt)
+				<-quitChan
+
+				// Stop the IDLE command
+				if err := idleCmd.Close(); err != nil {
+					log.Fatalf("IDLE command close failed: %v", err)
+				}
+
+				// Cancel the context to stop the workers
+				for _, w := range workers {
+					w.Cancel()
+				}
+
+				// Wait for all workers to finish
+				waitGroup.Wait()
+
+				log.Println("Exiting...")
 			},
 		},
 	)
 
-	if err := cli.Execute(); err != nil {
+	if err := cli.ExecuteContext(context.Background()); err != nil {
 		log.Fatal(err)
 	}
 }
