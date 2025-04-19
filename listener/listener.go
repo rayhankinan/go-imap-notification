@@ -19,20 +19,12 @@ func NewListener(username, password string, dataChan chan<- *imapclient.Unilater
 	options := &imapclient.Options{
 		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 			Mailbox: func(data *imapclient.UnilateralDataMailbox) {
-				// Check if the mailbox data is nil
-				if data == nil {
-					log.Println("No data received")
-					return
+				select {
+				case dataChan <- data:
+					log.Println("Received a new email notification")
+				default:
+					log.Println("Data channel is full, skipping notification")
 				}
-
-				// Check if the mailbox is nil
-				if data.NumMessages == nil {
-					log.Println("No messages in mailbox")
-					return
-				}
-
-				// Send the mailbox event to the data channel
-				dataChan <- data
 			},
 		},
 		WordDecoder: &mime.WordDecoder{CharsetReader: charset.Reader},
