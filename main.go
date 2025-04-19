@@ -4,14 +4,13 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"mime"
 	"os"
 	"os/signal"
 	"sync"
+	"time"
 
-	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
-	"github.com/emersion/go-message/charset"
+	"github.com/rayhankinan/go-imap-notification/listener"
 	"github.com/rayhankinan/go-imap-notification/worker"
 	"github.com/spf13/cobra"
 )
@@ -37,63 +36,39 @@ func main() {
 				password := args[1]
 
 				// Create a channel to receive notifications
-				dataChan := make(chan *imapclient.UnilateralDataMailbox, 1)
+				bufferSize := 10
+				dataChan := make(chan *imapclient.UnilateralDataMailbox, bufferSize)
 
-				// Listen for notifications of mailbox changes
-				options := &imapclient.Options{
-					UnilateralDataHandler: &imapclient.UnilateralDataHandler{
-						Mailbox: func(data *imapclient.UnilateralDataMailbox) {
-							select {
-							case dataChan <- data:
-								log.Println("A new notification has been received")
-							default:
-								log.Println("Current notification has not been processed yet")
-							}
-						},
-					},
-					WordDecoder: &mime.WordDecoder{CharsetReader: charset.Reader},
-				}
-				client, err := imapclient.DialTLS("imap.gmail.com:993", options)
+				// Spawn listener to handle notifications
+				l, err := listener.NewListener(username, password, dataChan)
 				if err != nil {
-					log.Fatalf("DialTLS failed: %v", err)
+					log.Fatalf("Failed to create listener: %v", err)
 				}
-				defer client.Close()
+				defer func() {
+					if err := l.Stop(); err != nil {
+						log.Printf("Failed to stop listener: %v", err)
+					}
 
-				// Login to the server
-				if err := client.Login(username, password).Wait(); err != nil {
-					log.Fatalf("Login failed: %v", err)
-				}
-				defer client.Logout()
+					if err := l.Logout(); err != nil {
+						log.Printf("Failed to logout: %v", err)
+					}
 
-				// Select the INBOX mailbox
-				// We use READ-ONLY mode to avoid accidentally marking emails as read
-				selectOptions := &imap.SelectOptions{
-					ReadOnly: true,
-				}
-				if _, err := client.Select("INBOX", selectOptions).Wait(); err != nil {
-					log.Fatal(err)
-				}
+					if err := l.Close(); err != nil {
+						log.Printf("Failed to close client: %v", err)
+					}
+				}()
 
-				log.Println("Waiting for new emails...")
+				log.Println("Listening for notifications...")
 
-				// IDLE command will block until a new email arrives
-				idleCmd, err := client.Idle()
-				if err != nil {
-					log.Fatalf("IDLE command failed: %v", err)
-				}
-
-				// Create a context to handle signals
-				ctx := cmd.Context()
-				waitGroup := &sync.WaitGroup{}
+				// Create a worker to process the notification
+				duration := 5 * time.Minute
+				w := worker.NewWorker(username, password, dataChan, duration)
 
 				// Spawn workers to process the notification
 				numWorker := 5
-				workers := []*worker.Worker{}
+				waitGroup := &sync.WaitGroup{}
 				for i := range numWorker {
-					w := worker.NewWorker(ctx, waitGroup, fmt.Sprintf("worker-%d", i+1))
-					workers = append(workers, w)
-
-					go w.Start(username, password, dataChan)
+					go w.Start(fmt.Sprintf("worker-%d", i+1), waitGroup)
 				}
 
 				// Wait for a signal to exit
@@ -101,15 +76,8 @@ func main() {
 				signal.Notify(quitChan, os.Interrupt)
 				<-quitChan
 
-				// Stop the IDLE command
-				if err := idleCmd.Close(); err != nil {
-					log.Fatalf("IDLE command close failed: %v", err)
-				}
-
-				// Cancel the context to stop the workers
-				for _, w := range workers {
-					w.Cancel()
-				}
+				// Close the data channel
+				close(dataChan)
 
 				// Wait for all workers to finish
 				waitGroup.Wait()
