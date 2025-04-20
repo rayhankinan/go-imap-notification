@@ -1,6 +1,7 @@
 package listener
 
 import (
+	"fmt"
 	"log"
 	"mime"
 
@@ -61,13 +62,14 @@ func NewListener(username, password string, dataChan chan<- *imapclient.Unilater
 }
 
 func (l *Listener) Stop() error {
-	return l.IdleCmd.Close()
-}
-
-func (l *Listener) Logout() error {
-	return l.Client.Logout().Wait()
-}
-
-func (l *Listener) Close() error {
-	return l.Client.Close()
+	if err := l.IdleCmd.Close(); err != nil {
+		return fmt.Errorf("failed to close IDLE command: %w", err)
+	}
+	if err := l.Client.Logout().Wait(); err != nil {
+		return fmt.Errorf("failed to logout: %w", err)
+	}
+	if err := l.Client.Close(); err != nil {
+		return fmt.Errorf("failed to close client: %w", err)
+	}
+	return nil
 }

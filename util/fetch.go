@@ -43,6 +43,15 @@ func FetchMails(username, password string, sentSince time.Time) ([]string, error
 		return nil, fmt.Errorf("failed to search for emails: %w", err)
 	}
 
+	// Fetch the email messages
+	fetchOptions := &imap.FetchOptions{
+		Envelope: true,
+	}
+	messages, err := client.Fetch(searchData.All, fetchOptions).Collect()
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch emails: %w", err)
+	}
+
 	// Mark the messages as seen
 	store := &imap.StoreFlags{
 		Op:     imap.StoreFlagsAdd,
@@ -51,15 +60,6 @@ func FetchMails(username, password string, sentSince time.Time) ([]string, error
 	}
 	if _, err := client.Store(searchData.All, store, nil).Collect(); err != nil {
 		return nil, fmt.Errorf("failed to mark emails as seen: %w", err)
-	}
-
-	// Fetch the email messages
-	fetchOptions := &imap.FetchOptions{
-		Envelope: true,
-	}
-	messages, err := client.Fetch(searchData.All, fetchOptions).Collect()
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch emails: %w", err)
 	}
 
 	// Loop through the messages

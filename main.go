@@ -46,15 +46,7 @@ func main() {
 				}
 				defer func() {
 					if err := l.Stop(); err != nil {
-						log.Printf("Failed to stop listener: %v", err)
-					}
-
-					if err := l.Logout(); err != nil {
-						log.Printf("Failed to logout: %v", err)
-					}
-
-					if err := l.Close(); err != nil {
-						log.Printf("Failed to close client: %v", err)
+						log.Printf("Failed to stop listener: \"%v\"", err)
 					}
 				}()
 
