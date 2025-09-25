@@ -2,16 +2,14 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"os"
 	"os/signal"
-	"sync"
 	"time"
 
-	"github.com/emersion/go-imap/v2/imapclient"
+	"github.com/hibiken/asynq"
+	"github.com/rayhankinan/go-imap-notification/handler"
 	"github.com/rayhankinan/go-imap-notification/listener"
-	"github.com/rayhankinan/go-imap-notification/worker"
 	"github.com/spf13/cobra"
 )
 
@@ -28,19 +26,18 @@ func main() {
 			Short: "Notify when a new email arrives",
 			Long:  "Notify when a new email arrives",
 			Run: func(cmd *cobra.Command, args []string) {
-				if len(args) != 2 {
-					log.Fatal("Usage: notify-email <username> <password>")
+				if cmd.Flags().NArg() < 2 {
+					log.Fatal("Username and password are required")
 				}
 
-				username := args[0]
-				password := args[1]
+				username := cmd.Flags().Arg(0)
+				password := cmd.Flags().Arg(1)
 
-				// Create a channel to receive notifications
-				bufferSize := 1
-				dataChan := make(chan *imapclient.UnilateralDataMailbox, bufferSize)
+				// Initialize Asynq
+				asynqClient := asynq.NewClient(asynq.RedisClientOpt{Addr: "localhost:6379"})
 
 				// Spawn listener to handle notifications
-				l, err := listener.NewListener(username, password, dataChan)
+				l, err := listener.NewListener(username, password, asynqClient)
 				if err != nil {
 					log.Fatalf("Failed to create listener: %v", err)
 				}
@@ -52,29 +49,36 @@ func main() {
 
 				log.Println("Listening for notifications...")
 
-				// Create a worker to process the notification
-				duration := 5 * time.Minute
-				w := worker.NewWorker(username, password, dataChan, duration)
-
-				// Spawn workers to process the notification
-				numWorker := 5
-				waitGroup := &sync.WaitGroup{}
-				for i := range numWorker {
-					go w.Start(fmt.Sprintf("worker-%d", i+1), waitGroup)
-				}
-
 				// Wait for a signal to exit
 				quitChan := make(chan os.Signal, 1)
 				signal.Notify(quitChan, os.Interrupt)
 				<-quitChan
 
-				// Close the data channel
-				close(dataChan)
-
-				// Wait for all workers to finish
-				waitGroup.Wait()
-
 				log.Println("Exiting...")
+			},
+		},
+		&cobra.Command{
+			Use:   "worker",
+			Short: "Start the worker to process email notifications",
+			Long:  "Start the worker to process email notifications",
+			Run: func(cmd *cobra.Command, args []string) {
+				// Initialize Asynq server
+				srv := asynq.NewServer(
+					asynq.RedisClientOpt{Addr: "localhost:6379"},
+					asynq.Config{
+						Concurrency: 10,
+					},
+				)
+
+				duration := cmd.Flags().Duration("duration", 5*time.Minute, "Duration in seconds to look back for new emails")
+
+				h := handler.NewHandler(*duration)
+				mux := asynq.NewServeMux()
+				mux.HandleFunc("email:notify", h.HandleEmail)
+
+				if err := srv.Run(mux); err != nil {
+					log.Fatalf("Could not run server: %v", err)
+				}
 			},
 		},
 	)

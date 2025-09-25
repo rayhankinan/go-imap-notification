@@ -1,6 +1,7 @@
 package listener
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"mime"
@@ -8,6 +9,8 @@ import (
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-message/charset"
+	"github.com/hibiken/asynq"
+	"github.com/rayhankinan/go-imap-notification/messages"
 )
 
 type Listener struct {
@@ -15,17 +18,29 @@ type Listener struct {
 	IdleCmd *imapclient.IdleCommand
 }
 
-func NewListener(username, password string, dataChan chan<- *imapclient.UnilateralDataMailbox) (*Listener, error) {
+func NewListener(username, password string, asynqClient *asynq.Client) (*Listener, error) {
 	// Listen for notifications of mailbox changes
 	options := &imapclient.Options{
 		UnilateralDataHandler: &imapclient.UnilateralDataHandler{
 			Mailbox: func(data *imapclient.UnilateralDataMailbox) {
-				select {
-				case dataChan <- data:
-					log.Println("Received a new email notification")
-				default:
-					log.Println("Data channel is full, skipping notification")
+				payload, err := json.Marshal(messages.EmailMessage{
+					Username:    username,
+					Password:    password,
+					NumMessages: data.NumMessages,
+				})
+				if err != nil {
+					log.Printf("Failed to marshal email message: %v\n", err)
+					return
 				}
+
+				task := asynq.NewTask(messages.TypeEmailNotify, payload)
+				info, err := asynqClient.Enqueue(task)
+				if err != nil {
+					log.Printf("Failed to enqueue task: %v\n", err)
+					return
+				}
+
+				log.Printf("Enqueued task: id=%s queue=%s\n", info.ID, info.Queue)
 			},
 		},
 		WordDecoder: &mime.WordDecoder{CharsetReader: charset.Reader},
