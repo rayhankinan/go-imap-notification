@@ -11,6 +11,10 @@ import (
 	"github.com/rayhankinan/go-imap-notification/util"
 )
 
+const (
+	TypeEmailNotify = "email:notify"
+)
+
 type Handler interface {
 	HandleEmail(ctx context.Context, task *asynq.Task) error
 }

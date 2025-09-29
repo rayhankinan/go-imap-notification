@@ -10,6 +10,7 @@ import (
 	"github.com/emersion/go-imap/v2/imapclient"
 	"github.com/emersion/go-message/charset"
 	"github.com/hibiken/asynq"
+	"github.com/rayhankinan/go-imap-notification/handler"
 	"github.com/rayhankinan/go-imap-notification/messages"
 )
 
@@ -33,7 +34,7 @@ func NewListener(username, password string, asynqClient *asynq.Client) (*Listene
 					return
 				}
 
-				task := asynq.NewTask(messages.TypeEmailNotify, payload)
+				task := asynq.NewTask(handler.TypeEmailNotify, payload)
 				info, err := asynqClient.Enqueue(task)
 				if err != nil {
 					log.Printf("Failed to enqueue task: %v\n", err)

@@ -5,7 +5,3 @@ type EmailMessage struct {
 	Password    string  `json:"password"`
 	NumMessages *uint32 `json:"num_messages"`
 }
-
-const (
-	TypeEmailNotify = "email:notify"
-)

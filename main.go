@@ -74,7 +74,7 @@ func main() {
 
 				h := handler.NewHandler(*duration)
 				mux := asynq.NewServeMux()
-				mux.HandleFunc("email:notify", h.HandleEmail)
+				mux.HandleFunc(handler.TypeEmailNotify, h.HandleEmail)
 
 				if err := srv.Run(mux); err != nil {
 					log.Fatalf("Could not run server: %v", err)
