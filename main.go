@@ -41,11 +41,7 @@ func main() {
 				if err != nil {
 					log.Fatalf("Failed to create listener: %v", err)
 				}
-				defer func() {
-					if err := l.Stop(); err != nil {
-						log.Printf("Failed to stop listener: \"%v\"", err)
-					}
-				}()
+				defer l.Stop()
 
 				log.Println("Listening for notifications...")
 
